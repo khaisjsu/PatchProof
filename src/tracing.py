@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import contextlib
 import os
+import threading
+import time
 from typing import Any, Iterator
 
 _DISABLED_REASON: str | None = None
@@ -147,6 +149,48 @@ def make_tracer(*, required: bool = False) -> Tracer:
 
 def disabled_reason() -> str | None:
     return _DISABLED_REASON
+
+
+# -- process-wide tracer ------------------------------------------------------
+#
+# make_tracer() builds a new Langfuse client and makes a blocking auth_check()
+# network call every time. Doing that per run (and, before this, on every
+# /health probe) cost a round trip each time and leaked a client per run.
+# get_tracer() builds it once per process. A failed build is retried after
+# _RETRY_DISABLED_S so a Langfuse that was down at startup is picked up later
+# without a restart.
+
+_RETRY_DISABLED_S = 60.0
+_cached: tuple[tuple[str, ...], Tracer, float] | None = None
+_cache_lock = threading.Lock()
+
+
+def _env_key() -> tuple[str, ...]:
+    return tuple(
+        os.environ.get(k, "")
+        for k in ("LANGFUSE_ENABLED", "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_HOST")
+    )
+
+
+def get_tracer() -> Tracer:
+    """The shared Tracer for this process. Cheap to call on every request."""
+    global _cached
+    key = _env_key()
+    now = time.monotonic()
+    with _cache_lock:
+        if _cached is not None:
+            cached_key, tracer, expires = _cached
+            if cached_key == key and (tracer.enabled or now < expires):
+                return tracer
+        tracer = make_tracer()
+        _cached = (key, tracer, now + _RETRY_DISABLED_S)
+        return tracer
+
+
+def cached_tracer_enabled() -> bool | None:
+    """Whether the shared tracer is on, WITHOUT building it. None = not built yet."""
+    cached = _cached
+    return None if cached is None else cached[1].enabled
 
 
 def summarize_messages(messages: list[dict[str, Any]], *, limit: int = 4000) -> str:

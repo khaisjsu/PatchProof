@@ -6,6 +6,7 @@ requests/hour, which one eval run would exhaust.
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
@@ -34,6 +35,16 @@ def _token() -> str | None:
     tok = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     if tok:
         return tok.strip()
+    return _gh_cli_token()
+
+
+@functools.lru_cache(maxsize=1)
+def _gh_cli_token() -> str | None:
+    """`gh auth token`, looked up once per process.
+
+    This used to spawn a `gh` subprocess (up to 15s) on EVERY HTTP request --
+    two per issue fetch, more during golden-set builds.
+    """
     try:
         proc = subprocess.run(
             ["gh", "auth", "token"], capture_output=True, timeout=15
@@ -72,7 +83,9 @@ def fetch_issue(owner: str, repo: str, number: int, *, with_comments: bool = Tru
 
     comments: list[dict[str, str]] = []
     if with_comments and raw.get("comments", 0):
-        for c in _get(f"/repos/{owner}/{repo}/issues/{number}/comments"):
+        # per_page=100: the default page size of 30 silently dropped comments
+        # on long threads, which is exactly where the useful context lives.
+        for c in _get(f"/repos/{owner}/{repo}/issues/{number}/comments?per_page=100"):
             comments.append(
                 {"author": (c.get("user") or {}).get("login", "unknown"), "body": c.get("body") or ""}
             )

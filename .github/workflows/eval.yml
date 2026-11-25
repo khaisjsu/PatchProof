@@ -44,6 +44,13 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # Free and fast (no Docker, no API key): fail here before spending
+      # anything on the eval gate below.
+      - name: Unit tests
+        env:
+          LANGFUSE_ENABLED: "0"
+        run: python -m pytest
+
       - name: Build the sandbox image
         run: |
           docker build -t repo-triage-sandbox:latest \

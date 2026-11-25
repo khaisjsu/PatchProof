@@ -68,7 +68,7 @@ def fail_to_pass(
             if not rev.ok:
                 return out | {"result": "revert-failed", "detail": rev.stderr[:300]}
 
-            test_only = tb.run_tests(target=" ".join(test_files))
+            test_only = tb.run_tests(target=test_files)
     except SandboxError as exc:
         return out | {"result": "error", "detail": str(exc)[:300]}
 
@@ -128,7 +128,7 @@ def upstream_oracle(
             if not got.ok:
                 return out | {"result": "truth-fetch-failed", "detail": got.stderr[:300]}
 
-            truth = tb.run_tests(target=" ".join(truth_test_files))
+            truth = tb.run_tests(target=list(truth_test_files))
     except SandboxError as exc:
         return out | {"result": "error", "detail": str(exc)[:300]}
 

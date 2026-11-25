@@ -23,8 +23,8 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY requirements.txt .
-# Streamlit and pandas belong to the dashboard, not the service.
-RUN grep -viE '^(streamlit|pandas)' requirements.txt > /tmp/req.txt \
+# Streamlit and pandas belong to the dashboard, pytest to the test suite.
+RUN grep -viE '^(streamlit|pandas|pytest)' requirements.txt > /tmp/req.txt \
  && pip install --no-cache-dir -r /tmp/req.txt
 
 COPY src/ ./src/

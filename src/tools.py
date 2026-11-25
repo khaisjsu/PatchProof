@@ -40,6 +40,46 @@ class Toolbox:
         self.sandbox = sandbox
         self.test_timeout = test_timeout
         self.diff_log: list[str] = []
+        # The last GREEN full-suite run and the working-tree fingerprint it ran
+        # against. Cleared by any edit. Lets the harness skip a redundant final
+        # suite run when nothing has changed since -- see reusable_suite_result.
+        self._green_suite: tuple[str, dict[str, Any]] | None = None
+
+    # -- tree fingerprint ----------------------------------------------------
+
+    def tree_fingerprint(self) -> str | None:
+        """sha256 of the full working-tree diff, binary content included.
+
+        Two equal fingerprints mean the tracked tree (plus new files) is
+        byte-identical, so a test result observed at one is valid at the other.
+        Returns None if it cannot be computed; callers then re-run.
+        """
+        res = self.sandbox.exec(
+            "git add -A -N . && git diff --binary | sha256sum", timeout=60
+        )
+        if not res.ok:
+            return None
+        digest = res.stdout.strip().split(" ", 1)[0]
+        return digest or None
+
+    def reusable_suite_result(self, fingerprint: str | None) -> dict[str, Any] | None:
+        """The cached green full-suite result, if the tree has not changed.
+
+        Two independent guards, both required:
+          * no write_file / apply_patch since that run (the dirty flag), and
+          * the tree fingerprint now equals the one the suite ran against
+            (catches a test run that modified tracked files itself).
+        Only a GREEN run is ever reused; a red result is always re-checked.
+        """
+        if fingerprint is None or self._green_suite is None:
+            return None
+        cached_fp, result = self._green_suite
+        if cached_fp != fingerprint:
+            return None
+        return dict(result)
+
+    def _mark_dirty(self) -> None:
+        self._green_suite = None
 
     # -- read_file ---------------------------------------------------------
 
@@ -64,6 +104,7 @@ class Toolbox:
     # -- write_file --------------------------------------------------------
 
     def write_file(self, path: str, content: str) -> dict[str, Any]:
+        self._mark_dirty()
         before = self.sandbox.exec(f"cat {shlex.quote(path)} 2>/dev/null", timeout=30)
         old = before.stdout if before.exit_code == 0 else ""
 
@@ -109,10 +150,13 @@ class Toolbox:
         Fuzzy application can land a hunk in the wrong place, so the rung used
         is always reported back and the caller is told to verify with git_diff.
         """
+        # Dirty even if every rung fails: GNU patch can apply some hunks and
+        # reject others, so a failed call may still have changed the tree.
+        self._mark_dirty()
         if not diff.endswith("\n"):
             diff += "\n"
 
-        strict = self.sandbox.exec("git apply --whitespace=nowarn -", timeout=60, stdin=diff)
+        strict =self.sandbox.exec("git apply --whitespace=nowarn -", timeout=60, stdin=diff)
         if strict.ok:
             self.diff_log.append(diff)
             return {"ok": True, "mode": "strict"}
@@ -175,10 +219,28 @@ class Toolbox:
 
     _COUNT_RE = re.compile(r"(\d+) (passed|failed|error|errors|skipped|xfailed|xpassed)")
 
-    def run_tests(self, target: str | None = None) -> dict[str, Any]:
+    def run_tests(self, target: str | list[str] | None = None) -> dict[str, Any]:
+        """Run pytest. `target` is one pytest target or a list of them.
+
+        A string is passed as ONE argument, because pytest node ids routinely
+        contain spaces (`test_fix[simple case]`). Several files must be passed
+        as a list: joining them into one string used to hand pytest a single
+        path that does not exist, which errors -- and an error reads as "the
+        tests fail", so a multi-file target could never pass.
+        """
         cmd = "python -m pytest -q --no-header -p no:cacheprovider --tb=short"
-        if target:
-            cmd += f" {shlex.quote(target)}"
+        targets = [target] if isinstance(target, str) else list(target or [])
+        targets = [t for t in targets if t and t.strip()]
+        for t in targets:
+            cmd += f" {shlex.quote(t)}"
+
+        full_suite = not targets
+        if full_suite:
+            # Fingerprint BEFORE running: if the run itself changes tracked
+            # files, the post-run fingerprint will differ and the cached
+            # result will (correctly) not be reused.
+            fingerprint = self.tree_fingerprint()
+            self._green_suite = None
 
         res = self.sandbox.exec(cmd, timeout=self.test_timeout)
         combined = res.stdout + ("\n" + res.stderr if res.stderr.strip() else "")
@@ -208,7 +270,7 @@ class Toolbox:
             if line.startswith(("FAILED ", "ERROR "))
         ]
 
-        return {
+        result = {
             "ok": res.exit_code == 0,
             "timed_out": False,
             "exit_code": res.exit_code,
@@ -219,6 +281,9 @@ class Toolbox:
             "failing_tests": failing[:50],
             "output": _truncate(combined),
         }
+        if full_suite and result["ok"] and fingerprint:
+            self._green_suite = (fingerprint, dict(result))
+        return result
 
     # -- grep_code ---------------------------------------------------------
 
@@ -244,6 +309,19 @@ class Toolbox:
     # -- git_diff ----------------------------------------------------------
 
     def git_diff(self) -> dict[str, Any]:
+        """The model-facing diff: truncated so it cannot flood the context."""
+        return self._git_diff(limit=12000)
+
+    def full_diff(self) -> dict[str, Any]:
+        """The harness-facing diff: never truncated.
+
+        The final result, the run log, and eval's re-application of the patch
+        in a fresh sandbox all need the real diff. A diff cut in the middle
+        (with an "[N chars omitted]" marker) does not apply.
+        """
+        return self._git_diff(limit=None)
+
+    def _git_diff(self, *, limit: int | None) -> dict[str, Any]:
         # -N stages intents-to-add so new files show up in the diff without
         # actually staging content.
         res = self.sandbox.exec("git add -A -N . && git diff", timeout=60)
@@ -253,7 +331,7 @@ class Toolbox:
         return {
             "ok": True,
             "empty": not diff.strip(),
-            "diff": _truncate(diff, 12000),
+            "diff": diff if limit is None else _truncate(diff, limit),
             "diff_bytes": len(diff),
         }
 

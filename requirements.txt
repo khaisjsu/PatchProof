@@ -12,6 +12,10 @@ pydantic>=2.9.0
 # Run log. MySQL when DATABASE_URL is set, SQLite otherwise.
 pymysql>=1.1.0
 
-# Dashboard (Phase 7)
-streamlit>=1.40.0
+# Dashboard (Phase 7). 1.50+ for st.fragment polling and width="stretch".
+streamlit>=1.50.0
 pandas>=2.2.0
+
+# Tests (no API key or Docker needed): pytest tests/
+pytest>=8.0.0
+httpx>=0.27.0

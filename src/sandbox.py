@@ -123,6 +123,10 @@ class Sandbox:
         if not self.container_id:
             return
         cid, self.container_id = self.container_id, None
+        # Drop the exit hook registered in start(). Without this, a long-lived
+        # process (the API) keeps every Sandbox it ever made alive in atexit's
+        # list, and a normal exit walks all of them.
+        atexit.unregister(self.stop)
         try:
             _run_host(["docker", "rm", "-f", cid], timeout=60)
         except subprocess.TimeoutExpired:  # pragma: no cover - teardown best effort

@@ -11,7 +11,8 @@ import pathlib
 from dataclasses import dataclass, field
 
 import anthropic
-from dotenv import load_dotenv
+
+from envfile import load_env  # noqa: F401 - re-exported; scripts import it from here
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -30,10 +31,6 @@ PRICES_PER_MTOK: dict[str, tuple[float, float]] = {
 # Cache reads bill at 10% of the input rate; cache writes at 125%.
 _CACHE_READ_MULTIPLIER = 0.10
 _CACHE_WRITE_MULTIPLIER = 1.25
-
-
-def load_env() -> None:
-    load_dotenv(ROOT / ".env")
 
 
 def make_client() -> anthropic.Anthropic:

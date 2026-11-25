@@ -2,8 +2,8 @@
 #
 #   docker compose up -d --build
 #
-#   API        http://localhost:8000      (POST /run, needs X-API-Key)
-#   Dashboard  http://localhost:8501
+#   API        http://localhost:8000      (POST /jobs or /run, needs X-API-Key)
+#   Dashboard  http://localhost:8501      (overview, run an issue, run details)
 #   Langfuse   http://localhost:3000      (dev@example.com / langfuse-dev-password)
 #   MySQL      localhost:3306             (triage / triage, db: triage)
 #
@@ -81,8 +81,11 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
+    # For TRIAGE_API_KEY: the "Run an issue" tab queues runs through the API.
+    env_file: .env
     environment:
       DATABASE_URL: mysql://triage:triage@mysql:3306/triage
+      TRIAGE_API_URL: http://api:8080
     ports:
       - "8501:8501"
 

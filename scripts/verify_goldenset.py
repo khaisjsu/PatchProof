@@ -63,9 +63,19 @@ def verify(task: dict, *, deep: bool) -> dict:
                 out["detail"] = got.stderr.strip()[:200]
                 return out
 
-            after = tb.run_tests(target=" ".join(task["truth_test_files"]))
+            after = tb.run_tests(target=list(task["truth_test_files"]))
             out["truth_test_failed"] = after.get("failed", 0) + after.get("errors", 0)
-            out["status"] = "OK" if not after.get("ok") else "NOT_REPRODUCIBLE"
+            if after.get("ok"):
+                out["status"] = "NOT_REPRODUCIBLE"
+            elif out["truth_test_failed"] == 0:
+                # Red, but not because a test failed: pytest could not collect
+                # or find the target. That proves nothing about the bug. (This
+                # is how #976 used to pass verification: its two test files
+                # were joined into one nonexistent path.)
+                out["status"] = "TRUTH_TEST_NOT_RUN"
+                out["detail"] = after.get("output", "")[-300:]
+            else:
+                out["status"] = "OK"
             out["failing"] = after.get("failing_tests", [])[:3]
             return out
 

@@ -18,6 +18,7 @@ import json
 import os
 import pathlib
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import unquote, urlparse
@@ -29,7 +30,24 @@ _COLUMNS = (
     "created_utc", "source", "tag", "issue_id", "status", "resolved", "stop_reason",
     "model", "tool_call_count", "duration_seconds", "tokens_used", "cost_usd",
     "judge_score", "files_changed", "trace_url",
+    "tests_passed", "tests_failed", "diff",
 )
+
+# Everything except the (potentially large) diff. List views read these; the
+# diff is fetched one run at a time by get_run().
+SUMMARY_COLUMNS = ("id",) + tuple(c for c in _COLUMNS if c != "diff")
+
+# A diff bigger than this is truncated before storage. The agent's real fixes
+# are a few KB; anything near this is a runaway rewrite, not a patch.
+MAX_STORED_DIFF = 256_000
+
+# Columns added after the first release, with their types per backend. Existing
+# databases get them via ALTER TABLE on first connect; old rows read as NULL.
+_ADDED_COLUMNS: dict[str, dict[str, str]] = {
+    "tests_passed": {"sqlite": "INTEGER", "mysql": "INT"},
+    "tests_failed": {"sqlite": "INTEGER", "mysql": "INT"},
+    "diff": {"sqlite": "TEXT", "mysql": "MEDIUMTEXT"},
+}
 
 _SQLITE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -48,7 +66,10 @@ CREATE TABLE IF NOT EXISTS runs (
     cost_usd          REAL,
     judge_score       INTEGER,
     files_changed     TEXT,               -- JSON array
-    trace_url         TEXT
+    trace_url         TEXT,
+    tests_passed      INTEGER,
+    tests_failed      INTEGER,
+    diff              TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_runs_created ON runs (created_utc);
 CREATE INDEX IF NOT EXISTS idx_runs_issue   ON runs (issue_id);
@@ -74,6 +95,9 @@ CREATE TABLE IF NOT EXISTS runs (
     judge_score       INT,
     files_changed     TEXT,
     trace_url         TEXT,
+    tests_passed      INT,
+    tests_failed      INT,
+    diff              MEDIUMTEXT,
     INDEX idx_runs_created (created_utc),
     INDEX idx_runs_issue   (issue_id)
 ) CHARACTER SET utf8mb4
@@ -114,6 +138,39 @@ class _Conn:
         self.raw.close()
 
 
+# Schema setup (CREATE TABLE + column migration) runs once per process per
+# database rather than on every connect. Before, every log_run / exists /
+# recent call re-ran the DDL -- on MySQL that is extra round trips and an
+# implicit commit per call, and backfill_runs.py makes two calls per row.
+_schema_ready: set[str] = set()
+_schema_lock = threading.Lock()
+
+
+def _existing_columns(conn: "_Conn") -> set[str]:
+    if conn.kind == "mysql":
+        rows = conn.execute("SHOW COLUMNS FROM runs").fetchall()
+        return {r["Field"] for r in rows}
+    return {r[1] for r in conn.raw.execute("PRAGMA table_info(runs)").fetchall()}
+
+
+def _ensure_schema(conn: "_Conn", key: str) -> None:
+    if key in _schema_ready:
+        return
+    with _schema_lock:
+        if key in _schema_ready:
+            return
+        if conn.kind == "mysql":
+            conn.execute(_MYSQL_SCHEMA)
+        else:
+            conn.raw.executescript(_SQLITE_SCHEMA)
+        have = _existing_columns(conn)
+        for name, types in _ADDED_COLUMNS.items():
+            if name not in have:
+                conn.execute(f"ALTER TABLE runs ADD COLUMN {name} {types[conn.kind]}")
+        conn.commit()
+        _schema_ready.add(key)
+
+
 def connect(path: pathlib.Path | str = DB_PATH) -> _Conn:
     if backend() == "mysql":
         import pymysql
@@ -130,16 +187,16 @@ def connect(path: pathlib.Path | str = DB_PATH) -> _Conn:
             connect_timeout=10,
         )
         conn = _Conn(raw, "mysql")
-        conn.execute(_MYSQL_SCHEMA)
-        conn.commit()
+        _ensure_schema(conn, f"mysql:{describe()}")
         return conn
 
     path = pathlib.Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     raw = sqlite3.connect(str(path))
     raw.row_factory = sqlite3.Row
-    raw.executescript(_SQLITE_SCHEMA)
-    return _Conn(raw, "sqlite")
+    conn = _Conn(raw, "sqlite")
+    _ensure_schema(conn, f"sqlite:{path.resolve()}")
+    return conn
 
 
 def log_run(
@@ -178,12 +235,23 @@ def log_run(
                 (payload.get("judge") or {}).get("score"),
                 json.dumps(payload.get("files_changed") or []),
                 payload.get("trace_url"),
+                payload.get("tests_passed"),
+                payload.get("tests_failed"),
+                _clip_diff(payload.get("diff")),
             ),
         )
         conn.commit()
         return int(cur.lastrowid or 0)
     finally:
         conn.close()
+
+
+def _clip_diff(diff: str | None) -> str | None:
+    if not diff:
+        return None
+    if len(diff) <= MAX_STORED_DIFF:
+        return diff
+    return diff[:MAX_STORED_DIFF] + f"\n... [truncated: {len(diff) - MAX_STORED_DIFF} more chars]\n"
 
 
 def exists(issue_id: str, created_utc: str, path: pathlib.Path | str = DB_PATH) -> bool:
@@ -198,15 +266,69 @@ def exists(issue_id: str, created_utc: str, path: pathlib.Path | str = DB_PATH) 
         conn.close()
 
 
-def recent(limit: int | None = 100, path: pathlib.Path | str = DB_PATH) -> list[dict[str, Any]]:
-    """Newest first. limit=None returns every run."""
+def fill_details(
+    issue_id: str,
+    created_utc: str,
+    payload: dict[str, Any],
+    path: pathlib.Path | str = DB_PATH,
+) -> int:
+    """Fill diff / test counts on an existing row that lacks them.
+
+    For rows logged before those columns existed. Never overwrites a value
+    that is already there. Returns the number of rows updated.
+    """
     conn = connect(path)
     try:
-        sql = "SELECT * FROM runs ORDER BY created_utc DESC"
+        cur = conn.execute(
+            "UPDATE runs SET "
+            "diff = COALESCE(diff, ?), "
+            "tests_passed = COALESCE(tests_passed, ?), "
+            "tests_failed = COALESCE(tests_failed, ?) "
+            "WHERE issue_id = ? AND created_utc = ? "
+            "AND (diff IS NULL OR tests_passed IS NULL OR tests_failed IS NULL)",
+            (
+                _clip_diff(payload.get("diff")),
+                payload.get("tests_passed"),
+                payload.get("tests_failed"),
+                issue_id,
+                created_utc,
+            ),
+        )
+        conn.commit()
+        return int(cur.rowcount or 0)
+    finally:
+        conn.close()
+
+
+def recent(
+    limit: int | None = 100,
+    path: pathlib.Path | str = DB_PATH,
+    *,
+    with_diff: bool = False,
+) -> list[dict[str, Any]]:
+    """Newest first. limit=None returns every run.
+
+    The diff column is left out unless asked for: list views never show it,
+    and it is by far the largest column.
+    """
+    conn = connect(path)
+    try:
+        cols = "*" if with_diff else ", ".join(SUMMARY_COLUMNS)
+        sql = f"SELECT {cols} FROM runs ORDER BY created_utc DESC, id DESC"
         params: tuple = ()
         if limit is not None:
             sql += " LIMIT ?"
             params = (limit,)
         return [dict(r) for r in conn.execute(sql, params).fetchall()]
+    finally:
+        conn.close()
+
+
+def get_run(run_id: int, path: pathlib.Path | str = DB_PATH) -> dict[str, Any] | None:
+    """One run, diff included. None if there is no such id."""
+    conn = connect(path)
+    try:
+        row = conn.execute("SELECT * FROM runs WHERE id = ?", (int(run_id),)).fetchone()
+        return dict(row) if row is not None else None
     finally:
         conn.close()
