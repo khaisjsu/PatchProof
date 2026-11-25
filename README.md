@@ -64,7 +64,7 @@ curl -X POST localhost:8000/jobs -H "X-API-Key: $TRIAGE_API_KEY" -H "content-typ
   -d '{"issue_url": "https://github.com/asottile/pyupgrade/issues/749", "base_ref": "443797a8b190d1f7d0409a2c911257567d6e02ff^1"}'
 ```
  
-More example issues and the full API are in the [development guide](docs/DEVELOPMENT.md).
+More example issues and the full API are in the [development guide](docs/DESIGN.md).
  
  
 ## ⬇️ Installation
