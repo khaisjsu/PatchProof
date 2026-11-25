@@ -1,18 +1,18 @@
-# 🟢 GreenChecker
+# 🟢 PatchProof
  
 ![Python 3.12](https://img.shields.io/badge/python-3.12-blue)
 ![Docker Compose](https://img.shields.io/badge/runs%20with-docker%20compose-2496ED)
  
 > *An AI agent that fixes GitHub issues, and only calls it fixed when the real tests go green.*
  
-Paste a GitHub issue URL. GreenChecker reads the issue, patches the code inside a locked-down container, and runs the project's own test suite. You get an honest verdict, the exact patch, and what it cost.
+Paste a GitHub issue URL. PatchProof reads the issue, patches the code inside a locked-down container, and runs the project's own test suite. You get an honest verdict, the exact patch, and what it cost.
  
-![The GreenChecker dashboard: 16 runs, 8 of 16 resolved, $0.306 per resolved fix, 69-second median](docs/images/dashboard-overview.png)
+![The PatchProof dashboard: 16 runs, 8 of 16 resolved, $0.306 per resolved fix, 69-second median](docs/images/dashboard-overview.png)
  
  
 ## 🌟 Highlights
  
-- **The tests decide, not the AI.** Claude's "I fixed it" is treated as a claim; the verdict comes from a test run GreenChecker executes itself.
+- **The tests decide, not the AI.** Claude's "I fixed it" is treated as a claim; the verdict comes from a test run PatchProof executes itself.
 - **Honest numbers.** It resolves **8 of 16** real, closed [pyupgrade](https://github.com/asottile/pyupgrade) issues when the maintainer's own tests are the judge, at **$0.31 per fix** and a **69-second** median run.
 - **Safe by design.** Every run gets a fresh container with no network, 2 GB of RAM and 2 CPUs, deleted when the run ends.
 - **Watch it work.** Paste an issue into the dashboard, follow each step live, cancel at any time, and read the exact patch.
@@ -20,7 +20,7 @@ Paste a GitHub issue URL. GreenChecker reads the issue, patches the code inside 
 - **One command to run:** `docker compose up`.
 ## ℹ️ Overview
  
-GreenChecker is an autonomous issue-fixing agent built on Claude. It works like a careful new teammate: it reads the bug report, explores the code, writes a fix (plus a test when the expected behaviour changes), and proves the fix by running the whole test suite. If the tests don't go green, it doesn't call the issue fixed.
+PatchProof is an autonomous issue-fixing agent built on Claude. It works like a careful new teammate: it reads the bug report, explores the code, writes a fix (plus a test when the expected behaviour changes), and proves the fix by running the whole test suite. If the tests don't go green, it doesn't call the issue fixed.
  
 **How a run works:**
  
@@ -44,7 +44,7 @@ Measured on 16 real, closed pyupgrade issues, each checked in advance to have a 
  
 ### ✍️ Author
  
-GreenChecker is built and maintained by [@dattang12](https://github.com/dattang12). Claude Sonnet 5 writes and reviews the fixes; Claude Haiku 4.5 runs the optional triage check.
+PatchProof is built and maintained by [@dattang12](https://github.com/dattang12). Claude Sonnet 5 writes and reviews the fixes; Claude Haiku 4.5 runs the optional triage check.
  
  
 ## 🚀 Usage
@@ -74,8 +74,8 @@ More example issues and the full API are in the [development guide](docs/DEVELOP
 - **Docker**: Docker Desktop on macOS or Windows, or Docker Engine on Linux.
 - **An Anthropic API key** from the [Claude Console](https://platform.claude.com/settings/keys). API usage is billed separately from a Claude.ai subscription; a run costs $0.03–$0.36.
 ```bash
-git clone https://github.com/dattang12/GreenChecker.git
-cd GreenChecker
+git clone https://github.com/dattang12/PatchProof.git
+cd PatchProof
 cp .env.example .env
 docker compose up -d --build
 ```
@@ -91,7 +91,7 @@ Something not working? See [Troubleshooting](docs/DEVELOPMENT.md#-troubleshootin
  
 ## 💭 Feedback and contributing
  
-Found a bug, or an issue that GreenChecker handles badly? [Open an issue](https://github.com/dattang12/GreenChecker/issues) with the issue URL and what happened. A failed run is useful data.
+Found a bug, or an issue that PatchProof handles badly? [Open an issue](https://github.com/dattang12/PatchProof/issues) with the issue URL and what happened. A failed run is useful data.
  
 Pull requests are welcome. The [development guide](docs/DEVELOPMENT.md) covers the architecture, configuration and tests. Run `python -m pytest` (no Docker or API key needed) before opening one. Pull requests to `main` also run a small paid eval in CI that fails the build if the fix rate drops.
  
@@ -109,6 +109,6 @@ No license has been chosen yet, so default copyright applies. If you'd like to r
 - [CI eval gate](.github/workflows/eval.yml): unit tests, smoke test and a 6-issue eval on every pull request
 - [Saved results](results/) and the [golden set](data/goldenset.verified.json), the raw data behind every number above
 - [The agent's instructions](src/prompts.py)
-- [SWE-bench](https://www.swebench.com), the benchmark whose grading rule GreenChecker follows
+- [SWE-bench](https://www.swebench.com), the benchmark whose grading rule PatchProof follows
 - [Claude API docs](https://platform.claude.com/docs) and [Langfuse docs](https://langfuse.com/docs)
  
